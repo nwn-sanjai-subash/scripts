@@ -20,8 +20,6 @@ Required IAM permissions (minimum):
 
 Usage:
   python3 ssm_tomcat_report.py
-
-Author: ChatGPT (GPT-5 Thinking mini)
 '''
 from __future__ import print_function
 import boto3
