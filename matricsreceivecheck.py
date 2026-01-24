@@ -1,7 +1,7 @@
 import boto3
 from datetime import datetime, timedelta
 
-INSTANCE_ID = "i-08bd03bdecb4635ba"  # Replace with your test instance
+INSTANCE_ID = "id"  # Replace with your test instance
 
 cloudwatch = boto3.client('cloudwatch')
 
