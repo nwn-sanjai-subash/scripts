@@ -1,5 +1,6 @@
 import boto3
 from collections import defaultdict
+from datetime import datetime, timezone
 
 KEYWORDS = ["iv", "mcs", "intervision"]
 
@@ -8,16 +9,27 @@ asg = boto3.client("autoscaling")
 eks = boto3.client("eks")
 cfn = boto3.client("cloudformation")
 
+now = datetime.now(timezone.utc)
+
 # -------------------------
 # Fetch AMIs (keyword only)
 # -------------------------
 images = ec2.describe_images(Owners=["self"])["Images"]
 
 amis = {}
+ami_meta = {}
+
 for i in images:
     name = i.get("Name", "")
     if name and any(k in name.lower() for k in KEYWORDS):
+        created = datetime.fromisoformat(
+            i["CreationDate"].replace("Z", "+00:00")
+        )
         amis[i["ImageId"]] = name
+        ami_meta[i["ImageId"]] = {
+            "created": created,
+            "age": (now - created).days
+        }
 
 # -------------------------
 # EC2 Instances usage
@@ -96,7 +108,7 @@ for c in clusters:
                 eks_usage[img].append(f"{c}/{ng}")
 
 # -------------------------
-# CloudFormation usage (template scan)
+# CloudFormation usage
 # -------------------------
 cfn_usage = defaultdict(list)
 
@@ -114,7 +126,6 @@ for s in stacks:
 
     stack_name = s["StackName"]
     template = cfn.get_template(StackName=stack_name)["TemplateBody"]
-
     template_text = str(template)
 
     for ami in amis:
@@ -125,12 +136,18 @@ for s in stacks:
 # Output table
 # -------------------------
 print("\nAMI USAGE VERIFICATION REPORT (READONLY)\n")
-print(f"{'AMI ID':<18} {'EC2':<6} {'LT':<6} {'ASG':<6} {'EKS':<6} {'CFN':<6} Name")
-print("-" * 110)
+print(
+    f"{'AMI ID':<18} {'Created':<12} {'Age':<6} "
+    f"{'EC2':<6} {'LT':<6} {'ASG':<6} {'EKS':<6} {'CFN':<6} Name"
+)
+print("-" * 135)
 
 for ami, name in amis.items():
+    meta = ami_meta[ami]
     print(
         f"{ami:<18} "
+        f"{meta['created'].strftime('%Y-%m-%d'):<12} "
+        f"{meta['age']:<6} "
         f"{'YES' if ami in ec2_usage else 'NO':<6} "
         f"{'YES' if ami in lt_usage else 'NO':<6} "
         f"{'YES' if ami in asg_usage else 'NO':<6} "
