@@ -1,6 +1,6 @@
 import boto3
 import csv
-from datetime import datetime, timezone
+from datetime import datetime
 
 ssm = boto3.client("ssm")
 ec2 = boto3.client("ec2")
@@ -20,7 +20,7 @@ INSTANCE_IDS = [
     "i-0c2bcb07a381a6b5a"
 ]
 
-output_file = f"patch_final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+output_file = f"patch_summary_final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
 def get_instance_names():
@@ -49,14 +49,15 @@ def get_patch_summary(instance_id):
     return None
 
 
-def get_available_patches(instance_id):
+# ✅ FIX: Use AvailableSecurityUpdate
+def get_security_updates(instance_id):
     patches = []
     paginator = ssm.get_paginator("describe_instance_patches")
 
     try:
         for page in paginator.paginate(
             InstanceId=instance_id,
-            Filters=[{"Key": "State", "Values": ["Available"]}]
+            Filters=[{"Key": "State", "Values": ["AvailableSecurityUpdate"]}]
         ):
             patches.extend(page["Patches"])
     except:
@@ -69,7 +70,6 @@ instance_names = get_instance_names()
 
 with open(output_file, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
-
     writer.writerow(["Instance", "Name", "Compliance", "Patch", "KB", "Reason"])
 
     for instance_id in INSTANCE_IDS:
@@ -81,29 +81,29 @@ with open(output_file, "w", newline="") as csvfile:
             writer.writerow([instance_id, name, "NoData", "-", "-", "No patch data"])
             continue
 
-        compliance = "COMPLIANT" if summary.get("MissingCount", 0) == 0 else "NON_COMPLIANT"
+        # Compliance
+        if summary.get("MissingCount", 0) > 0 or summary.get("FailedCount", 0) > 0:
+            compliance = "NON_COMPLIANT"
+        else:
+            compliance = "COMPLIANT"
 
-        available_security = summary.get("AvailableSecurityUpdateCount", 0)
-        security_non_compliant = summary.get("SecurityNonCompliantCount", 0)
+        security_updates = get_security_updates(instance_id)
 
-        patches = get_available_patches(instance_id)
-
-        if not patches:
+        if not security_updates:
             writer.writerow([instance_id, name, compliance, "-", "-", "Fully compliant"])
             continue
 
-        for p in patches:
+        for p in security_updates:
             title = p.get("Title", "N/A")
-            kb = p.get("KBId", "N/A")
-            severity = p.get("Severity", "Unknown")
+            kb = p.get("KBId") or p.get("Id") or "N/A"
 
-            if security_non_compliant > 0:
-                reason = "🔴 Security update pending (needs attention)"
-            elif available_security > 0:
-                reason = "🟡 Pending approval (baseline delay)"
-            else:
-                reason = "⚠️ Review required"
-
-            writer.writerow([instance_id, name, compliance, title, kb, reason])
+            writer.writerow([
+                instance_id,
+                name,
+                compliance,
+                title,
+                kb,
+                "🔴 Security update pending (needs attention)"
+            ])
 
 print(f"\nFinal CSV generated: {output_file}")
