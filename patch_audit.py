@@ -21,15 +21,30 @@ INSTANCE_IDS = [
 
 output_file = f"patch_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
+# ✅ Step 1: Get only SSM managed instances
+def get_managed_instances():
+    managed = set()
+    paginator = ssm.get_paginator("describe_instance_information")
+
+    for page in paginator.paginate():
+        for inst in page["InstanceInformationList"]:
+            managed.add(inst["InstanceId"])
+
+    return managed
+
+# ✅ Step 2: Get patch summary
 def get_patch_summary(instance_id):
     try:
         response = ssm.describe_instance_patch_states(
             InstanceIds=[instance_id]
         )
-        return response["InstancePatchStates"][0]
+        if response["InstancePatchStates"]:
+            return response["InstancePatchStates"][0]
     except:
-        return {}
+        pass
+    return None
 
+# ✅ Step 3: Get patch details
 def get_patches(instance_id, state):
     patches = []
     paginator = ssm.get_paginator("describe_instance_patches")
@@ -45,14 +60,16 @@ def get_patches(instance_id, state):
 
     return patches
 
+
+managed_instances = get_managed_instances()
+
 with open(output_file, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
 
-    # Header
     writer.writerow([
         "InstanceId",
         "OperatingSystem",
-        "ComplianceStatus",
+        "ComplianceState",
         "InstalledCount",
         "MissingCount",
         "FailedCount",
@@ -65,7 +82,17 @@ with open(output_file, "w", newline="") as csvfile:
     ])
 
     for instance_id in INSTANCE_IDS:
+
+        # ❗ Skip non-SSM instances
+        if instance_id not in managed_instances:
+            print(f"Skipping (not SSM managed): {instance_id}")
+            continue
+
         summary = get_patch_summary(instance_id)
+
+        if not summary:
+            print(f"No patch data found: {instance_id}")
+            continue
 
         os = summary.get("OperatingSystem", "Unknown")
         compliance = summary.get("ComplianceState", "Unknown")
@@ -109,4 +136,4 @@ with open(output_file, "w", newline="") as csvfile:
                 "Missing - likely pending approval"
             ])
 
-print(f"CSV report generated: {output_file}")
+print(f"\nCSV report generated: {output_file}")
