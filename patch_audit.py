@@ -1,6 +1,6 @@
 import boto3
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
 
 ssm = boto3.client("ssm")
 ec2 = boto3.client("ec2")
@@ -20,10 +20,9 @@ INSTANCE_IDS = [
     "i-0c2bcb07a381a6b5a"
 ]
 
-output_file = f"patch_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+output_file = f"patch_final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
-# ✅ Get instance names
 def get_instance_names():
     names = {}
     response = ec2.describe_instances(InstanceIds=INSTANCE_IDS)
@@ -40,12 +39,9 @@ def get_instance_names():
     return names
 
 
-# ✅ Get patch summary
 def get_patch_summary(instance_id):
     try:
-        response = ssm.describe_instance_patch_states(
-            InstanceIds=[instance_id]
-        )
+        response = ssm.describe_instance_patch_states(InstanceIds=[instance_id])
         if response["InstancePatchStates"]:
             return response["InstancePatchStates"][0]
     except:
@@ -53,7 +49,6 @@ def get_patch_summary(instance_id):
     return None
 
 
-# ✅ Get available (pending) patches → IMPORTANT FIX
 def get_available_patches(instance_id):
     patches = []
     paginator = ssm.get_paginator("describe_instance_patches")
@@ -86,11 +81,7 @@ with open(output_file, "w", newline="") as csvfile:
             writer.writerow([instance_id, name, "NoData", "-", "-", "No patch data"])
             continue
 
-        # ✅ Correct compliance logic
-        if summary.get("MissingCount", 0) > 0 or summary.get("FailedCount", 0) > 0:
-            compliance = "NON_COMPLIANT"
-        else:
-            compliance = "COMPLIANT"
+        compliance = "COMPLIANT" if summary.get("MissingCount", 0) == 0 else "NON_COMPLIANT"
 
         available_security = summary.get("AvailableSecurityUpdateCount", 0)
         security_non_compliant = summary.get("SecurityNonCompliantCount", 0)
@@ -103,9 +94,9 @@ with open(output_file, "w", newline="") as csvfile:
 
         for p in patches:
             title = p.get("Title", "N/A")
-            kb = p.get("KBId") or p.get("Id") or "N/A"  # ✅ fallback fix
+            kb = p.get("KBId", "N/A")
+            severity = p.get("Severity", "Unknown")
 
-            # ✅ Reason logic (based on real AWS fields)
             if security_non_compliant > 0:
                 reason = "🔴 Security update pending (needs attention)"
             elif available_security > 0:
@@ -115,4 +106,4 @@ with open(output_file, "w", newline="") as csvfile:
 
             writer.writerow([instance_id, name, compliance, title, kb, reason])
 
-print(f"\nCSV report generated: {output_file}")
+print(f"\nFinal CSV generated: {output_file}")
