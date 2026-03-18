@@ -5,44 +5,34 @@ from datetime import datetime
 ssm = boto3.client("ssm")
 ec2 = boto3.client("ec2")
 
-output_file = f"patch_summary_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+output_file = f"patch_summary_all_instances_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
-# ✅ Step 1: Get all SSM managed instances
-def get_all_managed_instances():
+# ✅ Step 1: Get ALL EC2 instances (running + stopped)
+def get_all_instances():
     instance_ids = []
-    paginator = ssm.get_paginator("describe_instance_information")
+    instance_names = {}
+
+    paginator = ec2.get_paginator("describe_instances")
 
     for page in paginator.paginate():
-        for inst in page["InstanceInformationList"]:
-            instance_ids.append(inst["InstanceId"])
-
-    return instance_ids
-
-
-# ✅ Step 2: Get instance names
-def get_instance_names(instance_ids):
-    names = {}
-
-    # EC2 API supports max 100 at a time
-    for i in range(0, len(instance_ids), 100):
-        batch = instance_ids[i:i+100]
-
-        response = ec2.describe_instances(InstanceIds=batch)
-
-        for res in response["Reservations"]:
+        for res in page["Reservations"]:
             for inst in res["Instances"]:
+                instance_id = inst["InstanceId"]
+                instance_ids.append(instance_id)
+
                 name = "N/A"
                 for tag in inst.get("Tags", []):
                     if tag["Key"] == "Name":
                         name = tag["Value"]
                         break
-                names[inst["InstanceId"]] = name
 
-    return names
+                instance_names[instance_id] = name
+
+    return instance_ids, instance_names
 
 
-# ✅ Step 3: Patch summary
+# ✅ Step 2: Patch summary
 def get_patch_summary(instance_id):
     try:
         response = ssm.describe_instance_patch_states(
@@ -55,7 +45,7 @@ def get_patch_summary(instance_id):
     return None
 
 
-# ✅ Step 4: Pending security updates
+# ✅ Step 3: Security updates (correct state)
 def get_security_updates(instance_id):
     patches = []
     paginator = ssm.get_paginator("describe_instance_patches")
@@ -74,8 +64,7 @@ def get_security_updates(instance_id):
 
 # 🔹 MAIN FLOW
 
-instance_ids = get_all_managed_instances()
-instance_names = get_instance_names(instance_ids)
+instance_ids, instance_names = get_all_instances()
 
 with open(output_file, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
@@ -87,8 +76,9 @@ with open(output_file, "w", newline="") as csvfile:
         name = instance_names.get(instance_id, "N/A")
         summary = get_patch_summary(instance_id)
 
+        # ❗ No SSM data
         if not summary:
-            writer.writerow([instance_id, name, "NoData", "-", "-", "No patch data"])
+            writer.writerow([instance_id, name, "NoData", "-", "-", "Not SSM managed or no patch scan"])
             continue
 
         # ✅ Compliance logic
