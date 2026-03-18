@@ -1,9 +1,11 @@
 import boto3
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
 
 ssm = boto3.client("ssm")
+ec2 = boto3.client("ec2")
 
+# 🔹 Your instances
 INSTANCE_IDS = [
     "i-0dff42f5f8f9ead6e",
     "i-0561a26ca101c8837",
@@ -19,20 +21,34 @@ INSTANCE_IDS = [
     "i-0c2bcb07a381a6b5a"
 ]
 
-output_file = f"patch_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+# 🔹 Set your baseline approval delay (IMPORTANT - adjust if needed)
+APPROVAL_DELAY_DAYS = 7
 
-# ✅ Step 1: Get only SSM managed instances
-def get_managed_instances():
-    managed = set()
-    paginator = ssm.get_paginator("describe_instance_information")
+output_file = f"patch_detailed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
-    for page in paginator.paginate():
-        for inst in page["InstanceInformationList"]:
-            managed.add(inst["InstanceId"])
 
-    return managed
+# ✅ Get instance names
+def get_instance_names():
+    names = {}
+    response = ec2.describe_instances(InstanceIds=INSTANCE_IDS)
 
-# ✅ Step 2: Get patch summary
+    for res in response["Reservations"]:
+        for inst in res["Instances"]:
+            instance_id = inst["InstanceId"]
+            name = "N/A"
+
+            if "Tags" in inst:
+                for tag in inst["Tags"]:
+                    if tag["Key"] == "Name":
+                        name = tag["Value"]
+                        break
+
+            names[instance_id] = name
+
+    return names
+
+
+# ✅ Patch summary
 def get_patch_summary(instance_id):
     try:
         response = ssm.describe_instance_patch_states(
@@ -44,15 +60,16 @@ def get_patch_summary(instance_id):
         pass
     return None
 
-# ✅ Step 3: Get patch details
-def get_patches(instance_id, state):
+
+# ✅ Missing patches
+def get_missing_patches(instance_id):
     patches = []
     paginator = ssm.get_paginator("describe_instance_patches")
 
     try:
         for page in paginator.paginate(
             InstanceId=instance_id,
-            Filters=[{"Key": "State", "Values": [state]}]
+            Filters=[{"Key": "State", "Values": ["Missing"]}]
         ):
             patches.extend(page["Patches"])
     except:
@@ -61,79 +78,79 @@ def get_patches(instance_id, state):
     return patches
 
 
-managed_instances = get_managed_instances()
+instance_names = get_instance_names()
+today = datetime.now(timezone.utc)
 
 with open(output_file, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
 
     writer.writerow([
         "InstanceId",
-        "OperatingSystem",
-        "ComplianceState",
-        "InstalledCount",
-        "MissingCount",
-        "FailedCount",
-        "PatchState",
-        "PatchTitle",
+        "InstanceName",
+        "Patched",
+        "ComplianceStatus",
+        "MissingPatch",
         "KBId",
-        "Classification",
         "Severity",
+        "ReleaseDate",
+        "DaysSinceRelease",
         "Reason"
     ])
 
     for instance_id in INSTANCE_IDS:
 
-        # ❗ Skip non-SSM instances
-        if instance_id not in managed_instances:
-            print(f"Skipping (not SSM managed): {instance_id}")
-            continue
-
         summary = get_patch_summary(instance_id)
 
+        name = instance_names.get(instance_id, "N/A")
+
         if not summary:
-            print(f"No patch data found: {instance_id}")
+            writer.writerow([instance_id, name, "No Data", "Unknown", "-", "-", "-", "-", "-", "No patch data"])
             continue
 
-        os = summary.get("OperatingSystem", "Unknown")
         compliance = summary.get("ComplianceState", "Unknown")
-        installed_count = summary.get("InstalledCount", 0)
         missing_count = summary.get("MissingCount", 0)
-        failed_count = summary.get("FailedCount", 0)
 
-        # Installed patches
-        installed = get_patches(instance_id, "Installed")
-        for p in installed:
+        patched = "Yes" if compliance == "COMPLIANT" else "No"
+
+        missing_patches = get_missing_patches(instance_id)
+
+        if not missing_patches:
+            writer.writerow([instance_id, name, patched, compliance, "-", "-", "-", "-", "-", "-"])
+            continue
+
+        for p in missing_patches:
+
+            release_date = p.get("ReleaseDate")
+            severity = p.get("Severity")
+            title = p.get("Title")
+            kb = p.get("KBId")
+
+            days_since_release = "N/A"
+            reason = "Unknown"
+
+            if release_date:
+                delta = today - release_date
+                days_since_release = delta.days
+
+                if delta.days < APPROVAL_DELAY_DAYS:
+                    reason = "🟡 Pending approval"
+                else:
+                    if severity in ["Critical", "Important"]:
+                        reason = "🔴 Critical missing - needs attention"
+                    else:
+                        reason = "Not approved / needs review"
+
             writer.writerow([
                 instance_id,
-                os,
+                name,
+                patched,
                 compliance,
-                installed_count,
-                missing_count,
-                failed_count,
-                "Installed",
-                p.get("Title"),
-                p.get("KBId"),
-                p.get("Classification"),
-                p.get("Severity"),
-                "Installed"
+                title,
+                kb,
+                severity,
+                release_date,
+                days_since_release,
+                reason
             ])
 
-        # Missing patches
-        missing = get_patches(instance_id, "Missing")
-        for p in missing:
-            writer.writerow([
-                instance_id,
-                os,
-                compliance,
-                installed_count,
-                missing_count,
-                failed_count,
-                "Missing",
-                p.get("Title"),
-                p.get("KBId"),
-                p.get("Classification"),
-                p.get("Severity"),
-                "Missing - likely pending approval"
-            ])
-
-print(f"\nCSV report generated: {output_file}")
+print(f"\nDetailed CSV report generated: {output_file}")
