@@ -1,11 +1,10 @@
 import boto3
 import csv
-from datetime import datetime, timezone
+from datetime import datetime
 
 ssm = boto3.client("ssm")
 ec2 = boto3.client("ec2")
 
-# 🔹 Your instances
 INSTANCE_IDS = [
     "i-0dff42f5f8f9ead6e",
     "i-0561a26ca101c8837",
@@ -21,10 +20,7 @@ INSTANCE_IDS = [
     "i-0c2bcb07a381a6b5a"
 ]
 
-# 🔹 Set your baseline approval delay (IMPORTANT - adjust if needed)
-APPROVAL_DELAY_DAYS = 7
-
-output_file = f"patch_detailed_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+output_file = f"patch_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
 # ✅ Get instance names
@@ -34,21 +30,17 @@ def get_instance_names():
 
     for res in response["Reservations"]:
         for inst in res["Instances"]:
-            instance_id = inst["InstanceId"]
             name = "N/A"
-
-            if "Tags" in inst:
-                for tag in inst["Tags"]:
-                    if tag["Key"] == "Name":
-                        name = tag["Value"]
-                        break
-
-            names[instance_id] = name
+            for tag in inst.get("Tags", []):
+                if tag["Key"] == "Name":
+                    name = tag["Value"]
+                    break
+            names[inst["InstanceId"]] = name
 
     return names
 
 
-# ✅ Patch summary
+# ✅ Get patch summary
 def get_patch_summary(instance_id):
     try:
         response = ssm.describe_instance_patch_states(
@@ -61,15 +53,15 @@ def get_patch_summary(instance_id):
     return None
 
 
-# ✅ Missing patches
-def get_missing_patches(instance_id):
+# ✅ Get available (pending) patches → IMPORTANT FIX
+def get_available_patches(instance_id):
     patches = []
     paginator = ssm.get_paginator("describe_instance_patches")
 
     try:
         for page in paginator.paginate(
             InstanceId=instance_id,
-            Filters=[{"Key": "State", "Values": ["Missing"]}]
+            Filters=[{"Key": "State", "Values": ["Available"]}]
         ):
             patches.extend(page["Patches"])
     except:
@@ -79,78 +71,48 @@ def get_missing_patches(instance_id):
 
 
 instance_names = get_instance_names()
-today = datetime.now(timezone.utc)
 
 with open(output_file, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
 
-    writer.writerow([
-        "InstanceId",
-        "InstanceName",
-        "Patched",
-        "ComplianceStatus",
-        "MissingPatch",
-        "KBId",
-        "Severity",
-        "ReleaseDate",
-        "DaysSinceRelease",
-        "Reason"
-    ])
+    writer.writerow(["Instance", "Name", "Compliance", "Patch", "KB", "Reason"])
 
     for instance_id in INSTANCE_IDS:
 
+        name = instance_names.get(instance_id, "N/A")
         summary = get_patch_summary(instance_id)
 
-        name = instance_names.get(instance_id, "N/A")
-
         if not summary:
-            writer.writerow([instance_id, name, "No Data", "Unknown", "-", "-", "-", "-", "-", "No patch data"])
+            writer.writerow([instance_id, name, "NoData", "-", "-", "No patch data"])
             continue
 
-        compliance = summary.get("ComplianceState", "Unknown")
-        missing_count = summary.get("MissingCount", 0)
+        # ✅ Correct compliance logic
+        if summary.get("MissingCount", 0) > 0 or summary.get("FailedCount", 0) > 0:
+            compliance = "NON_COMPLIANT"
+        else:
+            compliance = "COMPLIANT"
 
-        patched = "Yes" if compliance == "COMPLIANT" else "No"
+        available_security = summary.get("AvailableSecurityUpdateCount", 0)
+        security_non_compliant = summary.get("SecurityNonCompliantCount", 0)
 
-        missing_patches = get_missing_patches(instance_id)
+        patches = get_available_patches(instance_id)
 
-        if not missing_patches:
-            writer.writerow([instance_id, name, patched, compliance, "-", "-", "-", "-", "-", "-"])
+        if not patches:
+            writer.writerow([instance_id, name, compliance, "-", "-", "Fully compliant"])
             continue
 
-        for p in missing_patches:
+        for p in patches:
+            title = p.get("Title", "N/A")
+            kb = p.get("KBId") or p.get("Id") or "N/A"  # ✅ fallback fix
 
-            release_date = p.get("ReleaseDate")
-            severity = p.get("Severity")
-            title = p.get("Title")
-            kb = p.get("KBId")
+            # ✅ Reason logic (based on real AWS fields)
+            if security_non_compliant > 0:
+                reason = "🔴 Security update pending (needs attention)"
+            elif available_security > 0:
+                reason = "🟡 Pending approval (baseline delay)"
+            else:
+                reason = "⚠️ Review required"
 
-            days_since_release = "N/A"
-            reason = "Unknown"
+            writer.writerow([instance_id, name, compliance, title, kb, reason])
 
-            if release_date:
-                delta = today - release_date
-                days_since_release = delta.days
-
-                if delta.days < APPROVAL_DELAY_DAYS:
-                    reason = "🟡 Pending approval"
-                else:
-                    if severity in ["Critical", "Important"]:
-                        reason = "🔴 Critical missing - needs attention"
-                    else:
-                        reason = "Not approved / needs review"
-
-            writer.writerow([
-                instance_id,
-                name,
-                patched,
-                compliance,
-                title,
-                kb,
-                severity,
-                release_date,
-                days_since_release,
-                reason
-            ])
-
-print(f"\nDetailed CSV report generated: {output_file}")
+print(f"\nCSV report generated: {output_file}")
