@@ -23,6 +23,7 @@ INSTANCE_IDS = [
 output_file = f"patch_summary_final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
+# ✅ Get instance names
 def get_instance_names():
     names = {}
     response = ec2.describe_instances(InstanceIds=INSTANCE_IDS)
@@ -39,9 +40,12 @@ def get_instance_names():
     return names
 
 
+# ✅ Get patch summary
 def get_patch_summary(instance_id):
     try:
-        response = ssm.describe_instance_patch_states(InstanceIds=[instance_id])
+        response = ssm.describe_instance_patch_states(
+            InstanceIds=[instance_id]
+        )
         if response["InstancePatchStates"]:
             return response["InstancePatchStates"][0]
     except:
@@ -49,7 +53,7 @@ def get_patch_summary(instance_id):
     return None
 
 
-# ✅ FIX: Use AvailableSecurityUpdate
+# ✅ Get pending security updates (IMPORTANT FIX)
 def get_security_updates(instance_id):
     patches = []
     paginator = ssm.get_paginator("describe_instance_patches")
@@ -70,6 +74,8 @@ instance_names = get_instance_names()
 
 with open(output_file, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
+
+    # Final required columns
     writer.writerow(["Instance", "Name", "Compliance", "Patch", "KB", "Reason"])
 
     for instance_id in INSTANCE_IDS:
@@ -81,7 +87,7 @@ with open(output_file, "w", newline="") as csvfile:
             writer.writerow([instance_id, name, "NoData", "-", "-", "No patch data"])
             continue
 
-        # Compliance
+        # ✅ Correct compliance logic
         if summary.get("MissingCount", 0) > 0 or summary.get("FailedCount", 0) > 0:
             compliance = "NON_COMPLIANT"
         else:
@@ -89,13 +95,21 @@ with open(output_file, "w", newline="") as csvfile:
 
         security_updates = get_security_updates(instance_id)
 
+        # ✅ If no pending updates
         if not security_updates:
             writer.writerow([instance_id, name, compliance, "-", "-", "Fully compliant"])
             continue
 
+        # ✅ Process each pending update
         for p in security_updates:
             title = p.get("Title", "N/A")
             kb = p.get("KBId") or p.get("Id") or "N/A"
+
+            # ✅ Correct reasoning logic
+            if compliance == "COMPLIANT":
+                reason = "🟡 Pending approval (baseline delay)"
+            else:
+                reason = "🔴 Missing approved patch (needs attention)"
 
             writer.writerow([
                 instance_id,
@@ -103,7 +117,7 @@ with open(output_file, "w", newline="") as csvfile:
                 compliance,
                 title,
                 kb,
-                "🔴 Security update pending (needs attention)"
+                reason
             ])
 
-print(f"\nFinal CSV generated: {output_file}")
+print(f"\nCSV report generated: {output_file}")
