@@ -43,7 +43,7 @@ def filter_by_tags(instances, tag_conditions):
                 break
 
         if match:
-            matched.append(inst['InstanceId'])
+            matched.append(inst)
 
     return matched
 
@@ -52,15 +52,9 @@ def filter_by_tags(instances, tag_conditions):
 # Main
 # -------------------------------
 def main():
-    print("\n=== EC2 BACKUP FULL AUDIT (READ-ONLY) ===\n")
+    print("\n=== BACKUP CONFIGURATION AUDIT (READ-ONLY) ===\n")
 
     all_instances = get_all_ec2_instances()
-    all_instance_ids = [i['InstanceId'] for i in all_instances]
-
-    print(f"Total EC2 Instances discovered: {len(all_instances)}\n")
-
-    # Mapping: instance_id → details + assignments
-    instance_mapping = {}
 
     plans = backup.list_backup_plans()['BackupPlansList']
 
@@ -87,84 +81,47 @@ def main():
 
             print(f"\n   ➤ Selection: {sel_name}")
 
-            matched_instances = []
-
             resources = selection.get('Resources', [])
             tags = selection.get('ListOfTags', [])
+
+            matched_instances = []
 
             # Case 1: wildcard EC2
             if any("instance/*" in r for r in resources):
                 print("     Type: ALL EC2 (Wildcard)")
-                matched_instances = all_instance_ids
+                matched_instances = all_instances
 
             # Case 2: tag-based
             elif tags:
-                print("     Type: TAG-BASED")
+                print(f"     Type: TAG-BASED")
+
+                for tag in tags:
+                    print(f"       Tag: {tag['ConditionKey']} = {tag['ConditionValue']}")
+
                 matched_instances = filter_by_tags(all_instances, tags)
 
             # Case 3: explicit ARNs
             else:
                 print("     Type: EXPLICIT")
+
                 for r in resources:
                     if ":instance/" in r:
-                        instance_id = r.split("/")[-1]
-                        matched_instances.append(instance_id)
+                        iid = r.split("/")[-1]
 
-            print(f"     Instances Found: {len(matched_instances)}")
+                        for inst in all_instances:
+                            if inst["InstanceId"] == iid:
+                                matched_instances.append(inst)
 
-            # Map instances → assignments
-            for inst in all_instances:
-                iid = inst['InstanceId']
+            # Output instances
+            print(f"     Instances ({len(matched_instances)}):")
 
-                if iid in matched_instances:
-                    if iid not in instance_mapping:
-                        instance_mapping[iid] = {
-                            "Name": inst["Name"],
-                            "BackupTag": inst["Tags"].get("backup", "N/A"),
-                            "Assignments": []
-                        }
+            if matched_instances:
+                for inst in matched_instances:
+                    print(f"       - {inst['InstanceId']} | {inst['Name']}")
+            else:
+                print("       - None")
 
-                    instance_mapping[iid]["Assignments"].append(
-                        f"{plan_name} -> {sel_name}"
-                    )
-
-    # -------------------------------
-    # OVERLAP ANALYSIS
-    # -------------------------------
-    print("\n=== OVERLAP ANALYSIS (IMPORTANT) ===\n")
-
-    overlap_found = False
-
-    for iid, data in instance_mapping.items():
-        if len(data["Assignments"]) > 1:
-            overlap_found = True
-            print(f"⚠ Instance: {iid}")
-            print(f"   Name: {data['Name']}")
-            print(f"   Backup Tag: {data['BackupTag']}")
-            print("   Present in:")
-
-            for a in data["Assignments"]:
-                print(f"     - {a}")
-            print("")
-
-    if not overlap_found:
-        print("No overlapping instances found.\n")
-
-    # -------------------------------
-    # SUMMARY
-    # -------------------------------
-    print("\n=== SUMMARY ===")
-    print(f"Total EC2 Instances: {len(all_instances)}")
-    print(f"Instances with backup coverage: {len(instance_mapping)}")
-
-    uncovered = set(all_instance_ids) - set(instance_mapping.keys())
-
-    print(f"Instances NOT covered by backup: {len(uncovered)}")
-
-    if uncovered:
-        print("\nUncovered Instances:")
-        for iid in uncovered:
-            print(f" - {iid}")
+        print("\n" + "-"*60)
 
 
 if __name__ == "__main__":
