@@ -5,124 +5,99 @@ ec2 = boto3.client('ec2')
 
 
 # -------------------------------
-# Get all EC2 instances
+# Step 1: Get EC2 + group by tag
 # -------------------------------
-def get_all_ec2_instances():
-    instances = []
+def get_ec2_by_backup_tag():
+    tag_map = {
+        "ec2-production": [],
+        "ec2-production-weekly": []
+    }
+
+    all_instances = []
+
     paginator = ec2.get_paginator('describe_instances')
 
     for page in paginator.paginate():
         for res in page['Reservations']:
             for inst in res['Instances']:
-                instance_id = inst['InstanceId']
+                iid = inst['InstanceId']
                 tags = {t['Key']: t['Value'] for t in inst.get('Tags', [])}
+                name = tags.get("Name", "N/A")
+                backup_tag = tags.get("backup")
 
-                instances.append({
-                    "InstanceId": instance_id,
-                    "Name": tags.get("Name", "N/A"),
-                    "Tags": tags
-                })
+                instance_obj = {
+                    "InstanceId": iid,
+                    "Name": name,
+                    "BackupTag": backup_tag
+                }
 
-    return instances
+                all_instances.append(instance_obj)
+
+                # Group by backup tag
+                if backup_tag in tag_map:
+                    tag_map[backup_tag].append(instance_obj)
+
+    return tag_map, all_instances
 
 
 # -------------------------------
-# Extract tag conditions (FIX)
+# Step 2: Extract tag from selection
 # -------------------------------
-def extract_tag_conditions(selection):
-    tags = []
-
-    # Case 1: ListOfTags
+def extract_selection_tag(selection):
+    # Check ListOfTags
     if selection.get('ListOfTags'):
-        tags.extend(selection['ListOfTags'])
+        for tag in selection['ListOfTags']:
+            if tag['ConditionKey'] == 'backup':
+                return tag['ConditionValue']
 
-    # Case 2: Conditions (console-created)
+    # Check Conditions
     conditions = selection.get('Conditions', {})
     for cond_type in ['StringEquals', 'StringLike']:
         for cond in conditions.get(cond_type, []):
-            tags.append({
-                "ConditionKey": cond['ConditionKey'],
-                "ConditionValue": cond['ConditionValue']
-            })
+            if cond['ConditionKey'] == 'backup':
+                return cond['ConditionValue']
 
-    return tags
-
-
-# -------------------------------
-# Filter instances by tag
-# -------------------------------
-def filter_by_tags(instances, tag_conditions):
-    matched = []
-
-    for inst in instances:
-        match = True
-        for tag in tag_conditions:
-            key = tag['ConditionKey']
-            val = tag['ConditionValue']
-
-            if inst['Tags'].get(key) != val:
-                match = False
-                break
-
-        if match:
-            matched.append(inst)
-
-    return matched
-
-
-# -------------------------------
-# Resolve EC2 instances
-# -------------------------------
-def resolve_ec2_instances(selection, all_instances):
-    resources = selection.get('Resources', [])
-    tag_conditions = extract_tag_conditions(selection)
-
-    has_ec2 = any("instance" in r for r in resources)
-
-    # Case 1: EC2 + TAG → FILTER
-    if has_ec2 and tag_conditions:
-        return filter_by_tags(all_instances, tag_conditions), "EC2 + TAG FILTER", tag_conditions
-
-    # Case 2: EC2 only → ALL
-    elif has_ec2:
-        return all_instances, "ALL EC2 (No Tag Filter)", []
-
-    # Case 3: TAG only
-    elif tag_conditions:
-        return filter_by_tags(all_instances, tag_conditions), "TAG-BASED", tag_conditions
-
-    # Case 4: explicit
-    else:
-        matched = []
-        for r in resources:
-            if ":instance/" in r:
-                iid = r.split("/")[-1]
-                for inst in all_instances:
-                    if inst["InstanceId"] == iid:
-                        matched.append(inst)
-        return matched, "EXPLICIT", []
+    return None
 
 
 # -------------------------------
 # Main
 # -------------------------------
 def main():
-    print("\n=== BACKUP CONFIGURATION AUDIT (FINAL CORRECTED) ===\n")
+    print("\n=== BACKUP AUDIT (TAG-BASED APPROACH) ===\n")
 
-    all_instances = get_all_ec2_instances()
+    tag_map, all_instances = get_ec2_by_backup_tag()
+
     print(f"Total EC2 Instances: {len(all_instances)}\n")
 
+    print("=== INSTANCE GROUPING (SOURCE OF TRUTH) ===")
+
+    for tag, instances in tag_map.items():
+        print(f"\nTag: backup = {tag}")
+        print(f"Instances ({len(instances)}):")
+
+        for inst in instances:
+            print(f"  - {inst['InstanceId']} | {inst['Name']}")
+
+    print("\n" + "="*60)
+
+    # -------------------------------
+    # Step 2: Backup Config
+    # -------------------------------
     plans = backup.list_backup_plans()['BackupPlansList']
 
+    print("\n=== BACKUP CONFIGURATION MAPPING ===\n")
+
     for plan in plans:
-        print(f"\n🔹 Plan: {plan['BackupPlanName']}")
+        plan_name = plan['BackupPlanName']
+        print(f"\n🔹 Plan: {plan_name}")
 
         selections = backup.list_backup_selections(
             BackupPlanId=plan['BackupPlanId']
         )['BackupSelectionsList']
 
         for sel in selections:
-            print(f"\n   ➤ Selection: {sel['SelectionName']}")
+            sel_name = sel['SelectionName']
 
             sel_details = backup.get_backup_selection(
                 BackupPlanId=plan['BackupPlanId'],
@@ -131,22 +106,24 @@ def main():
 
             selection = sel_details['BackupSelection']
 
-            matched_instances, sel_type, tag_conditions = resolve_ec2_instances(
-                selection, all_instances
-            )
+            backup_tag = extract_selection_tag(selection)
 
-            print(f"     Type: {sel_type}")
+            print(f"\n   ➤ Selection: {sel_name}")
 
-            if tag_conditions:
-                for tag in tag_conditions:
-                    print(f"       Tag: {tag['ConditionKey']} = {tag['ConditionValue']}")
+            if backup_tag:
+                print(f"     Tag Mapping: backup = {backup_tag}")
 
-            print(f"     Instances ({len(matched_instances)}):")
+                matched_instances = tag_map.get(backup_tag, [])
 
-            for inst in matched_instances:
-                print(f"       - {inst['InstanceId']} | {inst['Name']}")
+                print(f"     Instances ({len(matched_instances)}):")
 
-        print("\n" + "-" * 60)
+                for inst in matched_instances:
+                    print(f"       - {inst['InstanceId']} | {inst['Name']}")
+
+            else:
+                print("     No backup tag found (manual or broad assignment)")
+
+        print("\n" + "-"*60)
 
 
 if __name__ == "__main__":
