@@ -27,6 +27,28 @@ def get_all_ec2_instances():
 
 
 # -------------------------------
+# Extract tag conditions (FIX)
+# -------------------------------
+def extract_tag_conditions(selection):
+    tags = []
+
+    # Case 1: ListOfTags
+    if selection.get('ListOfTags'):
+        tags.extend(selection['ListOfTags'])
+
+    # Case 2: Conditions (console-created)
+    conditions = selection.get('Conditions', {})
+    for cond_type in ['StringEquals', 'StringLike']:
+        for cond in conditions.get(cond_type, []):
+            tags.append({
+                "ConditionKey": cond['ConditionKey'],
+                "ConditionValue": cond['ConditionValue']
+            })
+
+    return tags
+
+
+# -------------------------------
 # Filter instances by tag
 # -------------------------------
 def filter_by_tags(instances, tag_conditions):
@@ -49,25 +71,27 @@ def filter_by_tags(instances, tag_conditions):
 
 
 # -------------------------------
-# Resolve EC2 instances for selection
+# Resolve EC2 instances
 # -------------------------------
 def resolve_ec2_instances(selection, all_instances):
     resources = selection.get('Resources', [])
-    tags = selection.get('ListOfTags', [])
+    tag_conditions = extract_tag_conditions(selection)
 
-    # Case 1: instance/* + TAG → FILTER
-    if any("instance/*" in r for r in resources) and tags:
-        return filter_by_tags(all_instances, tags), "EC2 + TAG FILTER"
+    has_ec2 = any("instance" in r for r in resources)
 
-    # Case 2: instance/* only → ALL EC2
-    elif any("instance/*" in r for r in resources):
-        return all_instances, "ALL EC2 (No Tag Filter)"
+    # Case 1: EC2 + TAG → FILTER
+    if has_ec2 and tag_conditions:
+        return filter_by_tags(all_instances, tag_conditions), "EC2 + TAG FILTER", tag_conditions
 
-    # Case 3: TAG only → filter
-    elif tags:
-        return filter_by_tags(all_instances, tags), "TAG-BASED"
+    # Case 2: EC2 only → ALL
+    elif has_ec2:
+        return all_instances, "ALL EC2 (No Tag Filter)", []
 
-    # Case 4: explicit ARNs
+    # Case 3: TAG only
+    elif tag_conditions:
+        return filter_by_tags(all_instances, tag_conditions), "TAG-BASED", tag_conditions
+
+    # Case 4: explicit
     else:
         matched = []
         for r in resources:
@@ -76,61 +100,51 @@ def resolve_ec2_instances(selection, all_instances):
                 for inst in all_instances:
                     if inst["InstanceId"] == iid:
                         matched.append(inst)
-        return matched, "EXPLICIT"
+        return matched, "EXPLICIT", []
 
 
 # -------------------------------
 # Main
 # -------------------------------
 def main():
-    print("\n=== BACKUP CONFIGURATION AUDIT (READ-ONLY) ===\n")
+    print("\n=== BACKUP CONFIGURATION AUDIT (FINAL CORRECTED) ===\n")
 
     all_instances = get_all_ec2_instances()
-    print(f"Total EC2 Instances discovered: {len(all_instances)}\n")
+    print(f"Total EC2 Instances: {len(all_instances)}\n")
 
     plans = backup.list_backup_plans()['BackupPlansList']
 
     for plan in plans:
-        plan_id = plan['BackupPlanId']
-        plan_name = plan['BackupPlanName']
-
-        print(f"\n🔹 Plan: {plan_name}")
+        print(f"\n🔹 Plan: {plan['BackupPlanName']}")
 
         selections = backup.list_backup_selections(
-            BackupPlanId=plan_id
+            BackupPlanId=plan['BackupPlanId']
         )['BackupSelectionsList']
 
         for sel in selections:
-            sel_id = sel['SelectionId']
-            sel_name = sel['SelectionName']
+            print(f"\n   ➤ Selection: {sel['SelectionName']}")
 
             sel_details = backup.get_backup_selection(
-                BackupPlanId=plan_id,
-                SelectionId=sel_id
+                BackupPlanId=plan['BackupPlanId'],
+                SelectionId=sel['SelectionId']
             )
 
             selection = sel_details['BackupSelection']
 
-            print(f"\n   ➤ Selection: {sel_name}")
-
-            # Resolve instances
-            matched_instances, sel_type = resolve_ec2_instances(selection, all_instances)
+            matched_instances, sel_type, tag_conditions = resolve_ec2_instances(
+                selection, all_instances
+            )
 
             print(f"     Type: {sel_type}")
 
-            # Print tag conditions if present
-            if selection.get('ListOfTags'):
-                for tag in selection['ListOfTags']:
+            if tag_conditions:
+                for tag in tag_conditions:
                     print(f"       Tag: {tag['ConditionKey']} = {tag['ConditionValue']}")
 
-            # Output instances
             print(f"     Instances ({len(matched_instances)}):")
 
-            if matched_instances:
-                for inst in matched_instances:
-                    print(f"       - {inst['InstanceId']} | {inst['Name']}")
-            else:
-                print("       - None")
+            for inst in matched_instances:
+                print(f"       - {inst['InstanceId']} | {inst['Name']}")
 
         print("\n" + "-" * 60)
 
