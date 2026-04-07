@@ -49,12 +49,44 @@ def filter_by_tags(instances, tag_conditions):
 
 
 # -------------------------------
+# Resolve EC2 instances for selection
+# -------------------------------
+def resolve_ec2_instances(selection, all_instances):
+    resources = selection.get('Resources', [])
+    tags = selection.get('ListOfTags', [])
+
+    # Case 1: instance/* + TAG → FILTER
+    if any("instance/*" in r for r in resources) and tags:
+        return filter_by_tags(all_instances, tags), "EC2 + TAG FILTER"
+
+    # Case 2: instance/* only → ALL EC2
+    elif any("instance/*" in r for r in resources):
+        return all_instances, "ALL EC2 (No Tag Filter)"
+
+    # Case 3: TAG only → filter
+    elif tags:
+        return filter_by_tags(all_instances, tags), "TAG-BASED"
+
+    # Case 4: explicit ARNs
+    else:
+        matched = []
+        for r in resources:
+            if ":instance/" in r:
+                iid = r.split("/")[-1]
+                for inst in all_instances:
+                    if inst["InstanceId"] == iid:
+                        matched.append(inst)
+        return matched, "EXPLICIT"
+
+
+# -------------------------------
 # Main
 # -------------------------------
 def main():
     print("\n=== BACKUP CONFIGURATION AUDIT (READ-ONLY) ===\n")
 
     all_instances = get_all_ec2_instances()
+    print(f"Total EC2 Instances discovered: {len(all_instances)}\n")
 
     plans = backup.list_backup_plans()['BackupPlansList']
 
@@ -81,36 +113,15 @@ def main():
 
             print(f"\n   ➤ Selection: {sel_name}")
 
-            resources = selection.get('Resources', [])
-            tags = selection.get('ListOfTags', [])
+            # Resolve instances
+            matched_instances, sel_type = resolve_ec2_instances(selection, all_instances)
 
-            matched_instances = []
+            print(f"     Type: {sel_type}")
 
-            # Case 1: wildcard EC2
-            if any("instance/*" in r for r in resources):
-                print("     Type: ALL EC2 (Wildcard)")
-                matched_instances = all_instances
-
-            # Case 2: tag-based
-            elif tags:
-                print(f"     Type: TAG-BASED")
-
-                for tag in tags:
+            # Print tag conditions if present
+            if selection.get('ListOfTags'):
+                for tag in selection['ListOfTags']:
                     print(f"       Tag: {tag['ConditionKey']} = {tag['ConditionValue']}")
-
-                matched_instances = filter_by_tags(all_instances, tags)
-
-            # Case 3: explicit ARNs
-            else:
-                print("     Type: EXPLICIT")
-
-                for r in resources:
-                    if ":instance/" in r:
-                        iid = r.split("/")[-1]
-
-                        for inst in all_instances:
-                            if inst["InstanceId"] == iid:
-                                matched_instances.append(inst)
 
             # Output instances
             print(f"     Instances ({len(matched_instances)}):")
@@ -121,7 +132,7 @@ def main():
             else:
                 print("       - None")
 
-        print("\n" + "-"*60)
+        print("\n" + "-" * 60)
 
 
 if __name__ == "__main__":
