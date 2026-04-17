@@ -5,9 +5,9 @@ from datetime import datetime, timedelta, timezone
 # Set your instance ID here
 INSTANCE_ID = "i-xxxxxxxxxxxxxxxxx"
 
-# Time range: last 24 hours
+# Time range: last 48 hours
 end_time = datetime.now(timezone.utc)
-start_time = end_time - timedelta(hours=24)
+start_time = end_time - timedelta(hours=48)
 
 client = boto3.client("cloudtrail")
 
@@ -49,7 +49,6 @@ while True:
             continue
 
         # Extract instance ID safely
-        instance_id = None
         try:
             instance_id = cloudtrail_event["requestParameters"]["instancesSet"]["items"][0]["instanceId"]
         except Exception:
@@ -76,4 +75,4 @@ while True:
         break
 
 if not found:
-    print("\nNo failed start attempts found in the last 24 hours.")
+    print("\nNo failed start attempts found in the last 48 hours.")
