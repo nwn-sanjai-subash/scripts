@@ -33,6 +33,23 @@ try:
     # Fetch all EBS volumes (Read-only)
     volumes = ec2.describe_volumes()["Volumes"]
 
+    # Fetch all snapshots owned by this account (Read-only)
+    snapshots = ec2.describe_snapshots(
+        OwnerIds=[account_id]
+    )["Snapshots"]
+
+    # Collect unencrypted snapshot IDs
+    unencrypted_snapshots = []
+
+    for snapshot in snapshots:
+
+        if not snapshot.get("Encrypted", False):
+            snapshot_id = snapshot.get("SnapshotId", "")
+            unencrypted_snapshots.append(snapshot_id)
+
+    # Convert snapshot list into comma-separated string
+    unencrypted_snapshots_str = ",".join(unencrypted_snapshots)
+
     # Output CSV file
     output_file = f"ebs_encryption_report_{account_id}.csv"
 
@@ -64,7 +81,8 @@ try:
             "VolumeId": volume_id,
             "Name": name,
             "Encrypted": encrypted,
-            "KmsKeyId": kms_key_id
+            "KmsKeyId": kms_key_id,
+            "UnencryptedSnapshots": unencrypted_snapshots_str
         })
 
     # Write CSV output
@@ -77,7 +95,8 @@ try:
             "VolumeId",
             "Name",
             "Encrypted",
-            "KmsKeyId"
+            "KmsKeyId",
+            "UnencryptedSnapshots"
         ]
 
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -95,6 +114,7 @@ try:
     print(f"EBS Encryption by Default  : {ebs_encryption_default}")
     print(f"Default KMS Key ID         : {default_kms_key_id}")
     print(f"Total Volumes Found        : {len(rows)}")
+    print(f"Unencrypted Snapshots      : {len(unencrypted_snapshots)}")
     print(f"CSV Output File            : {output_file}")
     print("========================================\n")
 
