@@ -7,7 +7,7 @@ from botocore.exceptions import ClientError
 # Fixed region as requested
 REGION = "us-east-1"
 
-# Initialize AWS clients
+# Initialize AWS clients (Read-only usage)
 ec2 = boto3.client("ec2", region_name=REGION)
 sts = boto3.client("sts", region_name=REGION)
 
@@ -22,7 +22,11 @@ try:
 
     # Get Default KMS Key ID for EBS encryption (Read-only)
     try:
-        default_kms_key_id = ec2.get_ebs_default_kms_key_id()["KmsKeyId"]
+        default_kms_key_arn = ec2.get_ebs_default_kms_key_id()["KmsKeyId"]
+
+        # Extract only the KMS Key ID from ARN
+        default_kms_key_id = default_kms_key_arn.split("/")[-1]
+
     except ClientError:
         default_kms_key_id = ""
 
@@ -38,7 +42,12 @@ try:
 
         volume_id = volume.get("VolumeId", "")
         encrypted = volume.get("Encrypted", False)
-        kms_key_id = volume.get("KmsKeyId", "")
+
+        # Get KMS Key ARN if volume is encrypted
+        kms_key_arn = volume.get("KmsKeyId", "")
+
+        # Extract only the KMS Key ID from ARN
+        kms_key_id = kms_key_arn.split("/")[-1] if kms_key_arn else ""
 
         # Fetch Name tag if available
         name = ""
