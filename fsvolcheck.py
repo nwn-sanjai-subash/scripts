@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 
 """
-FSx Volume Storage Verification Script
---------------------------------------
+FSx OpenZFS Volume Storage Verification Script
+----------------------------------------------
 
 Purpose:
-- Fetch ONE FSx volume details using Volume ID
+- Fetch ONE OpenZFS volume details
 - Show:
     - Volume Name
     - Provisioned Size
-    - Free Storage
     - Used Storage
+    - Free Storage
     - Utilization %
 
 Safe Usage:
 - Completely readonly
-- No update/modify/delete operations
+- No modify/update/delete operations
 - Safe for AWS CloudShell
 
 Required IAM Permissions:
@@ -56,28 +56,26 @@ volume_name = volume.get(
     "Unknown"
 )
 
+openzfs = volume.get(
+    "OpenZFSConfiguration",
+    {}
+)
+
 # ------------------------------------------------------------
-# FETCH SIZE SAFELY
+# PROVISIONED SIZE
 # ------------------------------------------------------------
 
 volume_size_gib = 0
 
-ontap = volume.get("OntapConfiguration")
+size_mb = openzfs.get(
+    "StorageCapacityQuotaGiB",
+    0
+)
 
-if ontap:
-
-    size_mb = ontap.get(
-        "SizeInMegabytes",
-        0
-    )
-
-    volume_size_gib = round(
-        size_mb / 1024,
-        2
-    )
+volume_size_gib = round(size_mb, 2)
 
 # ============================================================
-# FETCH CLOUDWATCH METRICS
+# FETCH CLOUDWATCH METRIC
 # ============================================================
 
 end_time = datetime.utcnow()
@@ -85,7 +83,7 @@ start_time = end_time - timedelta(hours=1)
 
 metric_response = cloudwatch.get_metric_statistics(
     Namespace="AWS/FSx",
-    MetricName="VolumeAvailableStorageCapacity",
+    MetricName="VolumeFreeDataStorageCapacity",
     Dimensions=[
         {
             "Name": "VolumeId",
@@ -113,7 +111,7 @@ if datapoints:
         reverse=True
     )[0]
 
-    # CloudWatch metric returns bytes
+    # Metric returns bytes
     free_storage_bytes = latest_datapoint["Average"]
 
     free_storage_gib = round(
