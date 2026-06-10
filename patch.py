@@ -232,5 +232,3 @@ def poll_patch_command(command_id: str, instance: dict, ssm) -> str:
             new_status = resp["StatusDetails"]
             if new_status != status:
                 log.info("    %s → %s", iid, new_status)
-                status = new_status
-            if
