@@ -16,7 +16,6 @@ Safety contract
 * Requires explicit "yes" confirmation before patching.
 """
 
-import argparse
 import json
 import logging
 import sys
@@ -38,10 +37,10 @@ LOG_FILE = "patch_execution.log"
 SSM_DOCUMENT = "AWS-RunPatchBaseline"
 PATCH_PARAMETERS = {"Operation": ["Install"], "RebootOption": ["RebootIfNeeded"]}
 
-EC2_RUNNING_TIMEOUT_SEC = 900      # 15 min to reach 'running'
-SSM_ONLINE_TIMEOUT_SEC = 900       # 15 min to reach SSM Online after running
-EC2_STOPPED_TIMEOUT_SEC = 300      # 5 min to reach 'stopped'
-PATCH_TIMEOUT_SEC = 10800          # 3 hrs for patch to complete
+EC2_RUNNING_TIMEOUT_SEC = 900      # 15 min
+SSM_ONLINE_TIMEOUT_SEC = 900       # 15 min
+EC2_STOPPED_TIMEOUT_SEC = 300      # 5 min
+PATCH_TIMEOUT_SEC = 10800          # 3 hrs
 POLL_INTERVAL_SEC = 30
 
 TERMINAL_SSM_STATUSES = {
@@ -76,7 +75,6 @@ def setup_logging() -> logging.Logger:
     logger.addHandler(ch)
     return logger
 
-
 log = setup_logging()
 
 # ---------------------------------------------------------------------------
@@ -97,7 +95,6 @@ def ts() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 def confirm(prompt: str) -> bool:
-    """Ask user for yes/no. Only 'yes' (case-insensitive) returns True."""
     try:
         answer = input(f"\n{prompt} (yes/no): ").strip().lower()
     except (EOFError, KeyboardInterrupt):
@@ -109,15 +106,11 @@ def write_json(path: str, data: dict) -> None:
     Path(path).write_text(json.dumps(data, indent=2))
     log.debug("Wrote %s", path)
 
-def read_json(path: str) -> dict:
-    return json.loads(Path(path).read_text())
-
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
 def resolve_instance_by_name(name: str, ec2) -> dict:
-    """Return the single EC2 instance dict matching Name tag, or raise."""
     resp = ec2.describe_instances(
         Filters=[{"Name": "tag:Name", "Values": [name]},
                  {"Name": "instance-state-name",
@@ -136,7 +129,6 @@ def resolve_instance_by_name(name: str, ec2) -> dict:
     return inst
 
 def validate_instance(inst: dict) -> dict:
-    """Validate single instance for Windows + stopped state."""
     state = inst["State"]["Name"]
     platform = inst.get("PlatformDetails", "")
     if "Windows" not in platform:
@@ -162,7 +154,6 @@ def wait_for_ec2_state(instance_id: str, target_state: str, timeout: int, ec2) -
     while time.monotonic() < deadline:
         resp = ec2.describe_instances(InstanceIds=[instance_id])
         state = resp["Reservations"][0]["Instances"][0]["State"]["Name"]
-        log.debug("    %s state: %s", instance_id, state)
         if state == target_state:
             log.info("    %s reached '%s'.", instance_id, target_state)
             return True
@@ -232,3 +223,15 @@ def poll_patch_command(command_id: str, instance: dict, ssm) -> str:
             new_status = resp["StatusDetails"]
             if new_status != status:
                 log.info("    %s → %s", iid, new_status)
+                status = new_status
+            if status in TERMINAL_SSM_STATUSES:
+                return status
+        except ssm.exceptions.InvocationDoesNotExist:
+            pass
+        except ClientError as exc:
+            log.warning("    Error polling %s: %s", iid, exc)
+        time.sleep(POLL_INTERVAL_SEC)
+    log.error("  Polling loop exceeded deadline for command %s.", command_id)
+    return status
+
+# ----------------------------------------------------------------
